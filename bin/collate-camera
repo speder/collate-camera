@@ -1,0 +1,110 @@
+#!/usr/bin/ruby
+
+# PURPOSE
+# move .jpg, .mov and .mp4 files from supplied directory to hierarchical YYYY/MM/DD directory 
+# .jpg and .thm files derive date from XIFR metadata
+# .mp4 and .mov files simply use mtime from stat
+
+# DEPENDENCIES
+# the exifr Gem is required to obtain metadata from an image file
+
+# PROBLEMS
+# the :force => false option of FileUtils.mv doesn't appear to work
+
+require 'optparse'
+require 'ostruct'
+require 'fileutils'
+require 'rubygems'
+require 'exifr'
+
+class Options
+  Directory = '/media/common/camera'
+  def self.parse(args)
+    options = OpenStruct.new(:directory => Directory)
+    opts = OptionParser.new do |opts|
+      opts.banner = "Usage: #$0 [options]"
+      opts.separator "\nOptions:"
+      opts.on('-d', '--dir directory', 'source directory')               { |d| options.directory = d }
+      opts.on('-f', '--[no-]force',    'overwrite files in destination') { |f| options.force = f }
+      opts.on('-n', '--noop',          'just pretend')                   { options.noop = true }
+      opts.on('-v', '--[no-]verbose',  'say it out loud')                { |v| options.verbose = v }
+      opts.on('-h', '--help',          "you're looking at it")           { puts opts; exit }
+      opts.separator "\nDefaults:"
+      opts.separator "-d #{Directory}"
+    end
+    begin
+      opts.parse!(args)
+    rescue OptionParser::ParseError => e
+      puts(e)
+      exit(1)
+    end
+    options.force = false if options.noop # noop wins
+    options
+  end
+end
+
+# parse the command line
+options = Options.parse(ARGV)
+
+# return date from exifr data
+exifr_date = lambda { |file| EXIFR::JPEG.new(file).date_time }
+
+# return date from file stat
+fstat_date = lambda { |file| File.stat(file).mtime }
+
+# return the destination directory, e.g., "./2009/12/23"
+destination_dir = lambda { |time|
+  File.join(options.directory, "%i/%02.f/%02.f" % [ time.year, time.month.to_f, time.day.to_f ])
+}
+
+# create destination directory with parents
+create_dirs = lambda { |dir|
+  FileUtils.mkdir_p(dir, :noop => options.noop, :verbose => options.verbose)
+  (print('.'); $stdout.flush) unless options.verbose
+}
+
+# move the file already
+move_file = lambda { |src, dst|
+  FileUtils.mv(src, dst, :noop => options.noop, :verbose => options.verbose, :force => options.force)
+  (print('+'); $stdout.flush) unless options.verbose
+}
+
+# move .jpg files
+Dir.glob("#{options.directory}/*.[Jj][Pp][Gg]").each do |image_file|
+  date = exifr_date.call(image_file)
+  date = fstat_date.call(image_file) if date.nil?
+  dest_dir = destination_dir.call(date)
+  create_dirs.call(dest_dir)
+  move_file.call(image_file, dest_dir)
+end
+
+# move .thm and associated .mov files
+Dir.glob("#{options.directory}/*.[Tt][Hh][Mm]").sort.each do |image_file|
+  date = exifr_date.call(image_file)
+  date = fstat_date.call(image_file) if date.nil?
+  dest_dir = destination_dir.call(date)
+  video_file = if image_file =~ /THM/
+    image_file.gsub(/THM/, 'MOV')
+  else
+    image_file.gsub(/thm/i, 'mov')
+  end
+  create_dirs.call(dest_dir)
+  move_file.call(image_file, dest_dir)
+  move_file.call(video_file, dest_dir)
+end
+
+# move .mov files (lacking associated .thm)
+Dir.glob("#{options.directory}/*.[Mm][Oo][Vv]").sort.each do |video_file|
+  dest_dir = destination_dir.call(File.stat(video_file).mtime)
+  create_dirs.call(dest_dir)
+  move_file.call(video_file, dest_dir)
+end
+
+# move .mp4 files
+Dir.glob("#{options.directory}/*.[Mm][Pp]4").sort.each do |video_file|
+  dest_dir = destination_dir.call(File.stat(video_file).mtime)
+  create_dirs.call(dest_dir)
+  move_file.call(video_file, dest_dir)
+end
+
+puts unless options.verbose
